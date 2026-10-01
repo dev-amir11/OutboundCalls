@@ -1,36 +1,64 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Outbound calling desk
 
-## Getting Started
+Admin dashboard for bulk outbound calling. This MVP runs entirely on a **mock telephony provider**. Simulated calls are workflow events only. They are not placed on the telephone network, and Telnyx credentials are not required.
 
-First, run the development server:
+## Stack
+
+Next.js, TypeScript, Tailwind CSS, shadcn-style UI components, PostgreSQL, Prisma, Zod.
+
+## Setup
+
+1. Copy `.env.example` to `.env` and set `DATABASE_URL` and `AUTH_SECRET`.
+2. Start PostgreSQL. For a local Prisma database:
+
+```bash
+npx prisma dev --detach --name outbound-calls
+```
+
+3. Apply the schema and seed sample data:
+
+```bash
+npx prisma migrate dev --name init
+npx prisma db seed
+```
+
+4. Start the app:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Sign in with the seeded admin:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- Email: `admin@outbound.local`
+- Password: `ChangeMe123!`
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Change `ADMIN_EMAIL` and `ADMIN_PASSWORD` before seeding if you want different credentials. The password is only applied when the user is first created.
 
-## Learn More
+## What the seed contains
 
-To learn more about Next.js, take a look at the following resources:
+Sample rows are marked **Seed** and campaign names start with `[SEED]`. The seed creates 50 leads, 3 campaigns, 100+ simulated call records, several active mock calls, and two generated tone files used as the human-answer and voicemail messages.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Mock calling
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Set a global result under Settings → Telephony, or a per-campaign mock result, to force `ANSWERED`, `VOICEMAIL`, `NO_ANSWER`, `BUSY`, or `FAILED`. Leave it on Random for a mixed development set.
 
-## Deploy on Vercel
+Open the dashboard or Current Calls and leave the page open. Those pages poll every few seconds, advance due mock calls, and fill open campaign slots up to the concurrency limit.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## LiveKit and Telnyx
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Outbound telephone calls are created by LiveKit. LiveKit opens one room per call and that room is the session until hangup. Telnyx is the SIP trunk LiveKit uses to reach the phone network.
+
+1. In Telnyx, create a credential SIP connection and an outbound number.
+2. In the environment, set `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, and `TELNYX_PHONE_NUMBER`.
+3. Either set `LIVEKIT_SIP_TRUNK_ID` for a trunk that already points at Telnyx, or set `TELNYX_SIP_USERNAME` and `TELNYX_SIP_PASSWORD`. The desk then creates a LiveKit outbound trunk named `outbound-calls-telnyx`. `TELNYX_SIP_ADDRESS` defaults to `sip.telnyx.com`.
+4. Set `TELEPHONY_PROVIDER=livekit` and restart the app.
+
+Settings → Telephony shows which of those values are present. It does not store the secrets. Leave `TELEPHONY_PROVIDER=mock` to keep simulated calls.
+
+## Scripts
+
+- `npm run dev` — app
+- `npm test` — unit tests for import, filters, the call state machine, the queue, and campaign transitions
+- `npm run lint` — ESLint
+- `npx tsc --noEmit` — typecheck

@@ -1,0 +1,315 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum LeadActivity {
+  NEW
+  IN_PROGRESS
+  IDLE
+}
+
+enum CallOutcome {
+  SUCCESSFUL
+  VOICEMAIL
+  NO_ANSWER
+  BUSY
+  FAILED
+  IN_PROGRESS
+  CANCELLED
+}
+
+enum AnswerType {
+  ANSWERED_HUMAN
+  ANSWERING_MACHINE
+  NO_ANSWER
+  BUSY
+  FAILED
+}
+
+enum CallLifecycleStatus {
+  QUEUED
+  DIALING
+  RINGING
+  ANSWERED_HUMAN
+  PLAY_HUMAN_MESSAGE
+  ANSWERING_MACHINE
+  PLAY_VOICEMAIL
+  NO_ANSWER
+  BUSY
+  FAILED
+  COMPLETED
+  CANCELLED
+}
+
+enum CampaignStatus {
+  DRAFT
+  QUEUED
+  RUNNING
+  PAUSED
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+enum CampaignLeadStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  SKIPPED
+  CANCELLED
+}
+
+enum ImportStatus {
+  PREVIEW
+  COMPLETED
+  FAILED
+}
+
+enum MessageKind {
+  HUMAN_ANSWER
+  VOICEMAIL
+}
+
+enum ForcedOutcome {
+  ANSWERED
+  VOICEMAIL
+  NO_ANSWER
+  BUSY
+  FAILED
+}
+
+enum LiveKitDeskStatus {
+  DIALING
+  RINGING
+  TALKING
+  ENDED
+  FAILED
+}
+
+model User {
+  id           String       @id @default(cuid())
+  email        String       @unique
+  name         String
+  passwordHash String
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  imports          LeadImport[]
+  liveKitSessions  LiveKitSession[]
+}
+
+model LeadImport {
+  id            String       @id @default(cuid())
+  fileName      String
+  status        ImportStatus @default(PREVIEW)
+  totalRows     Int
+  validRows     Int
+  invalidRows   Int
+  duplicateRows Int
+  importedRows  Int          @default(0)
+  preview       Json
+  isSeed        Boolean      @default(false)
+  createdById   String?
+  createdBy     User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  leads         Lead[]
+
+  @@index([createdAt])
+  @@index([status])
+  @@index([createdById])
+}
+
+model Lead {
+  id              String         @id @default(cuid())
+  name            String
+  phone           String
+  phoneNormalized String         @unique
+  email           String?
+  company         String?
+  notes           String?
+  extra           Json?
+  importId        String?
+  import          LeadImport?    @relation(fields: [importId], references: [id], onDelete: SetNull)
+  activity        LeadActivity   @default(NEW)
+  callAttempts    Int            @default(0)
+  lastCallAt      DateTime?
+  lastCallStatus  CallOutcome?
+  isSeed          Boolean        @default(false)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  campaignLeads   CampaignLead[]
+  calls           Call[]
+
+  @@index([createdAt])
+  @@index([lastCallAt])
+  @@index([lastCallStatus])
+  @@index([activity])
+  @@index([importId])
+}
+
+model Campaign {
+  id                 String          @id @default(cuid())
+  name               String
+  status             CampaignStatus  @default(DRAFT)
+  filter             Json
+  concurrency        Int
+  maxAttempts        Int             @default(1)
+  retryNoAnswer      Boolean         @default(false)
+  retryBusy          Boolean         @default(false)
+  retryFailed        Boolean         @default(false)
+  forcedOutcome      ForcedOutcome?
+  matchedCount       Int             @default(0)
+  humanMessageId     String?
+  voicemailMessageId String?
+  humanMessage       AudioMessage?   @relation("CampaignHumanMessage", fields: [humanMessageId], references: [id], onDelete: SetNull)
+  voicemailMessage   AudioMessage?   @relation("CampaignVoicemailMessage", fields: [voicemailMessageId], references: [id], onDelete: SetNull)
+  isSeed             Boolean         @default(false)
+  startedAt          DateTime?
+  pausedAt           DateTime?
+  completedAt        DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  leads              CampaignLead[]
+  calls              Call[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([humanMessageId])
+  @@index([voicemailMessageId])
+}
+
+model CampaignLead {
+  id          String             @id @default(cuid())
+  campaignId  String
+  leadId      String
+  attempts    Int                @default(0)
+  status      CampaignLeadStatus @default(PENDING)
+  lastOutcome CallOutcome?
+  campaign    Campaign           @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  lead        Lead               @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@unique([campaignId, leadId])
+  @@index([campaignId, status])
+  @@index([leadId])
+}
+
+model Call {
+  id                 String              @id @default(cuid())
+  leadId             String
+  campaignId         String?
+  provider           String
+  providerCallId     String?
+  status             CallLifecycleStatus
+  outcome            CallOutcome         @default(IN_PROGRESS)
+  answerType         AnswerType?
+  phoneNumber        String
+  startedAt          DateTime?
+  answeredAt         DateTime?
+  endedAt            DateTime?
+  durationSeconds    Int?
+  humanMessageId     String?
+  voicemailMessageId String?
+  humanMessage       AudioMessage?       @relation("CallHumanMessage", fields: [humanMessageId], references: [id], onDelete: SetNull)
+  voicemailMessage   AudioMessage?       @relation("CallVoicemailMessage", fields: [voicemailMessageId], references: [id], onDelete: SetNull)
+  errorCode          String?
+  errorMessage       String?
+  scheduledOutcome   ForcedOutcome?
+  nextTransitionAt   DateTime?
+  isMock             Boolean             @default(true)
+  activeLeadKey      String?             @unique
+  isSeed             Boolean             @default(false)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  lead               Lead                @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  campaign           Campaign?           @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  events             CallEvent[]
+
+  @@index([status])
+  @@index([outcome])
+  @@index([campaignId])
+  @@index([leadId])
+  @@index([startedAt])
+  @@index([nextTransitionAt])
+  @@index([humanMessageId])
+  @@index([voicemailMessageId])
+}
+
+model CallEvent {
+  id        String              @id @default(cuid())
+  callId    String
+  status    CallLifecycleStatus
+  message   String?
+  createdAt DateTime            @default(now())
+  call      Call                @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([callId, createdAt])
+}
+
+model AudioMessage {
+  id                   String      @id @default(cuid())
+  kind                 MessageKind
+  name                 String
+  fileName             String
+  storagePath          String
+  mimeType             String
+  durationSeconds      Int?
+  isActive             Boolean     @default(false)
+  isSeed               Boolean     @default(false)
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+  humanCalls           Call[]      @relation("CallHumanMessage")
+  voicemailCalls       Call[]      @relation("CallVoicemailMessage")
+  humanCampaigns       Campaign[]  @relation("CampaignHumanMessage")
+  voicemailCampaigns   Campaign[]  @relation("CampaignVoicemailMessage")
+
+  @@index([kind, isActive])
+}
+
+model LiveKitSession {
+  id           String            @id @default(cuid())
+  roomName     String            @unique
+  phoneDisplay String
+  phoneE164    String
+  callerId     String
+  dialed       String
+  status       LiveKitDeskStatus @default(DIALING)
+  detail       String            @default("")
+  startedAt    DateTime          @default(now())
+  answeredAt   DateTime?
+  endedAt      DateTime?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  createdById  String?
+  createdBy    User?             @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  events       LiveKitSessionEvent[]
+
+  @@index([startedAt])
+  @@index([status])
+  @@index([createdById])
+}
+
+model LiveKitSessionEvent {
+  id        String         @id @default(cuid())
+  sessionId String
+  kind      String
+  message   String
+  createdAt DateTime       @default(now())
+  session   LiveKitSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+}
+
+model SystemSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
