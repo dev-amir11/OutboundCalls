@@ -7,6 +7,7 @@ const STATUS_BY_KIND: Record<string, LiveKitDeskStatus | null> = {
   JOINED: null,
   RINGING: "RINGING",
   ANSWERED: "TALKING",
+  VOICEMAIL: null,
   HUNG_UP: "ENDED",
   FAILED: "FAILED",
 };

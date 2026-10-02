@@ -1,16 +1,18 @@
 import { LiveCallPanel } from "@/components/live-call-panel";
 import { PageHeader } from "@/components/page-header";
+import { findActiveMessage } from "@/repositories/message-repository";
 
 export const dynamic = "force-dynamic";
 
-export default function PlaceCallPage() {
+export default async function PlaceCallPage() {
+  const voicemail = await findActiveMessage("VOICEMAIL");
   return (
     <div>
       <PageHeader
         title="Place a call"
-        description="Press Call to dial. You hear ringing until he answers, then you can talk to each other. No voicemail is played."
+        description="If someone picks up, you talk. If the phone rings for about 20 seconds and the mailbox answers, the active voicemail is left for them."
       />
-      <LiveCallPanel />
+      <LiveCallPanel voicemailName={voicemail?.name ?? null} />
     </div>
   );
 }

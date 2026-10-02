@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { browserLiveKitUrl, buildDialString, digitsOnly } from "@/providers/livekit/dial";
 import { normalizeLiveKitHost } from "@/providers/livekit/config";
 import { normalizePhone } from "@/services/leads/phone";
+import { findActiveMessage } from "@/repositories/message-repository";
 import { appendLiveKitEvent, missingPhoneMeansEnded, noteSipStatus, startLiveKitSession } from "@/services/livekit/session-log";
 
 const ROOM_NAME = /^desk-[0-9a-f-]{36}$/i;
@@ -124,9 +125,13 @@ export async function POST(request: Request) {
     canPublish: true,
   });
 
+  const voicemail = await findActiveMessage("VOICEMAIL").catch(() => null);
+
   return NextResponse.json({
     roomName,
     sessionId: session.id,
+    voicemailUrl: voicemail ? `/api/audio/${voicemail.id}` : null,
+    voicemailName: voicemail?.name ?? null,
     token: await token.toJwt(),
     url: settings.browserUrl,
     dialed,
