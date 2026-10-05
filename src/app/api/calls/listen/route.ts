@@ -145,6 +145,7 @@ export async function POST(request: Request) {
   });
 
   const voicemail = await findActiveMessage("VOICEMAIL").catch(() => null);
+  const humanAnswer = await findActiveMessage("HUMAN_ANSWER").catch(() => null);
 
   return NextResponse.json({
     roomName,
@@ -152,6 +153,8 @@ export async function POST(request: Request) {
     amd,
     voicemailUrl: voicemail ? `/api/audio/${voicemail.id}` : null,
     voicemailName: voicemail?.name ?? null,
+    humanAnswerUrl: humanAnswer ? `/api/audio/${humanAnswer.id}` : null,
+    humanAnswerName: humanAnswer?.name ?? null,
     token: await token.toJwt(),
     url: settings.browserUrl,
     dialed,

@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import {
   AMD_CLASSIFIER_PROMPT,
   PLACE_CALL_AMD_AGENT,
+  looksLikeVoicemailEarly,
   refineAmdCategory,
   type AmdDataMessage,
   type SttLogMessage,
@@ -99,6 +100,26 @@ export default defineAgent({
     }
 
     // Stream STT to the desk live log while AMD listens.
+    // Strong voicemail phrases settle immediately — don't wait ~10–15s for silence/LLM.
+    let earlyAmd: AmdDataMessage | null = null;
+    let resolveEarly: ((message: AmdDataMessage) => void) | null = null;
+    const earlyPromise = new Promise<AmdDataMessage>((resolve) => {
+      resolveEarly = resolve;
+    });
+
+    const maybeSettleEarly = (text: string) => {
+      if (earlyAmd || !looksLikeVoicemailEarly(text)) return;
+      earlyAmd = {
+        type: "amd",
+        category: "machine-vm",
+        rawCategory: "uncertain",
+        transcript: text,
+        reason: "stt_voicemail_early",
+      };
+      logger.info({ amd: earlyAmd }, "AMD early settle from STT phrase");
+      resolveEarly?.(earlyAmd);
+    };
+
     session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (event) => {
       const text = event.transcript?.trim();
       if (!text) return;
@@ -108,6 +129,7 @@ export default defineAgent({
         isFinal: event.isFinal,
       });
       logger.info({ transcript: text, isFinal: event.isFinal }, "STT");
+      maybeSettleEarly(text);
     });
 
     const detector = new voice.AMD(session, {
@@ -116,11 +138,13 @@ export default defineAgent({
       stt: null,
       llm: null,
       interruptOnMachine: true,
-      // Avoid the short-greeting "human" fast path for brief voicemail prompts.
       humanSpeechThresholdMs: 400,
-      humanSilenceThresholdMs: 900,
-      machineSilenceThresholdMs: 1800,
-      waitUntilFinished: true,
+      humanSilenceThresholdMs: 700,
+      machineSilenceThresholdMs: 900,
+      // Hard cap after speech — do not wait out long carrier greetings.
+      waitUntilFinished: false,
+      detectionTimeoutMs: 6_000,
+      maxEndpointingDelayMs: 1_200,
       prompt: AMD_CLASSIFIER_PROMPT,
     });
 
@@ -141,20 +165,23 @@ export default defineAgent({
       }
 
       logger.info({ participantIdentity }, "Running LiveKit AMD");
-      const result = await detector.execute();
-      const rawCategory = result.category as AmdDataMessage["category"];
-      const refined = refineAmdCategory(rawCategory, result.transcript);
-      const message: AmdDataMessage = {
-        type: "amd",
-        category: refined.category,
-        rawCategory,
-        transcript: result.transcript,
-        reason: refined.reason ?? result.reason,
-      };
-      if (result.transcript?.trim()) {
+      const detectorPromise = detector.execute().then((result) => {
+        const rawCategory = result.category as AmdDataMessage["category"];
+        const refined = refineAmdCategory(rawCategory, result.transcript);
+        return {
+          type: "amd" as const,
+          category: refined.category,
+          rawCategory,
+          transcript: result.transcript,
+          reason: refined.reason ?? result.reason,
+        } satisfies AmdDataMessage;
+      });
+
+      const message = await Promise.race([earlyPromise, detectorPromise]);
+      if (message.transcript?.trim()) {
         await publishJson(ctx, {
           type: "stt",
-          transcript: result.transcript.trim(),
+          transcript: message.transcript.trim(),
           isFinal: true,
         });
       }
@@ -178,5 +205,9 @@ cli.runApp(
   new ServerOptions({
     agent: fileURLToPath(import.meta.url),
     agentName: PLACE_CALL_AMD_AGENT,
+    // Dev defaults to 0 idle procs + 10s init — Windows + tsx + Deepgram/Gemini
+    // imports often exceed that and fail with "runner initialization timed out".
+    numIdleProcesses: 1,
+    initializeProcessTimeout: 90_000,
   }),
 );

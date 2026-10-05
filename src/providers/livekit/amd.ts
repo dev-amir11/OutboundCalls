@@ -42,6 +42,21 @@ const VOICEMAIL_PHRASES = [
   "person you are trying to reach",
   "the person you called",
   "is not available",
+  "busy or unavailable",
+  "trying to call is busy",
+];
+
+/** High-confidence phrases — safe to settle AMD immediately without waiting for silence. */
+const VOICEMAIL_EARLY_PHRASES = [
+  "leave a message after the beep",
+  "leave your message after the beep",
+  "leave a message after the tone",
+  "record your message after the beep",
+  "record your message after the tone",
+  "please leave a message after the",
+  "at the tone, please record",
+  "at the tone please record",
+  "forwarded to an automatic voice message",
 ];
 
 export function isAmdDataMessage(value: unknown): value is AmdDataMessage {
@@ -73,6 +88,16 @@ export function looksLikeVoicemail(transcript: string | undefined | null) {
   const text = (transcript ?? "").toLowerCase().replace(/\s+/g, " ").trim();
   if (!text) return false;
   return VOICEMAIL_PHRASES.some((phrase) => text.includes(phrase));
+}
+
+/** Strong enough to abort AMD early (do not wait for greeting silence / LLM). */
+export function looksLikeVoicemailEarly(transcript: string | undefined | null) {
+  const text = (transcript ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!text) return false;
+  if (VOICEMAIL_EARLY_PHRASES.some((phrase) => text.includes(phrase))) return true;
+  // Two weaker signals together (e.g. "leave a message" + "after the beep").
+  const hits = VOICEMAIL_PHRASES.filter((phrase) => text.includes(phrase));
+  return hits.length >= 2;
 }
 
 export function refineAmdCategory(category: AmdCategory, transcript?: string | null): {

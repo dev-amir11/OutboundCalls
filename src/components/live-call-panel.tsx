@@ -50,53 +50,42 @@ type StatusEvent = { id: number; at: string; text: string };
 
 class CallSound {
   private ctx: AudioContext;
-  private beepNodes: OscillatorNode[] = [];
-  private beepGain: GainNode;
-  private buffer: AudioBuffer | null = null;
-  private beepTimer: ReturnType<typeof setTimeout> | null = null;
+  private voicemailBuffer: AudioBuffer | null = null;
+  private humanBuffer: AudioBuffer | null = null;
 
   constructor() {
     this.ctx = new AudioContext();
-    this.beepGain = this.ctx.createGain();
-    this.beepGain.gain.value = 0;
-    this.beepGain.connect(this.ctx.destination);
     void this.ctx.resume();
   }
 
-  /** Short dial beep only — no local ringtone (ringback comes from the receiver). */
-  dialBeep() {
-    this.stopBeep();
-    const oscillator = this.ctx.createOscillator();
-    oscillator.type = "sine";
-    oscillator.frequency.value = 480;
-    oscillator.connect(this.beepGain);
-    const now = this.ctx.currentTime;
-    this.beepGain.gain.cancelScheduledValues(now);
-    this.beepGain.gain.setValueAtTime(0, now);
-    this.beepGain.gain.linearRampToValueAtTime(0.08, now + 0.02);
-    this.beepGain.gain.linearRampToValueAtTime(0, now + 0.18);
-    oscillator.start(now);
-    oscillator.stop(now + 0.2);
-    this.beepNodes = [oscillator];
-    this.beepTimer = setTimeout(() => this.stopBeep(), 250);
-  }
-
-  async loadMessage(url: string) {
+  async loadVoicemail(url: string) {
     const response = await fetch(url);
     if (!response.ok) throw new Error("Voicemail audio could not be loaded.");
-    this.buffer = await this.ctx.decodeAudioData(await response.arrayBuffer());
+    this.voicemailBuffer = await this.ctx.decodeAudioData(await response.arrayBuffer());
   }
 
+  async loadHumanAnswer(url: string) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("Human-answer audio could not be loaded.");
+    this.humanBuffer = await this.ctx.decodeAudioData(await response.arrayBuffer());
+  }
+
+  hasVoicemail() {
+    return this.voicemailBuffer !== null;
+  }
+
+  hasHumanAnswer() {
+    return this.humanBuffer !== null;
+  }
+
+  /** @deprecated use hasVoicemail */
   hasMessage() {
-    return this.buffer !== null;
+    return this.hasVoicemail();
   }
 
-  /** Publish voicemail into the call and play it locally (remote audio should be muted first). */
-  playMessage() {
-    if (!this.buffer) throw new Error("Voicemail audio is not ready.");
-    this.stopBeep();
+  private playBuffer(buffer: AudioBuffer) {
     const source = this.ctx.createBufferSource();
-    source.buffer = this.buffer;
+    source.buffer = buffer;
     const destination = this.ctx.createMediaStreamDestination();
     source.connect(this.ctx.destination);
     source.connect(destination);
@@ -110,33 +99,42 @@ class CallSound {
     };
   }
 
-  stopBeep() {
-    if (this.beepTimer) clearTimeout(this.beepTimer);
-    this.beepTimer = null;
-    this.beepGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.01);
-    for (const oscillator of this.beepNodes) {
-      try {
-        oscillator.stop();
-      } catch {
-        // already stopped
-      }
-    }
-    this.beepNodes = [];
+  /** Publish voicemail into the call and play it locally (remote audio should be muted first). */
+  playMessage() {
+    if (!this.voicemailBuffer) throw new Error("Voicemail audio is not ready.");
+    return this.playBuffer(this.voicemailBuffer);
+  }
+
+  /** Publish human-answer greeting into the call and play it locally. */
+  playHumanAnswer() {
+    if (!this.humanBuffer) throw new Error("Human-answer audio is not ready.");
+    return this.playBuffer(this.humanBuffer);
   }
 
   close() {
-    this.stopBeep();
     void this.ctx.close();
   }
 }
 
-export function LiveCallPanel({ voicemailName }: { voicemailName: string | null }) {
+export function LiveCallPanel({
+  voicemailName,
+  humanAnswerName,
+}: {
+  voicemailName: string | null;
+  humanAnswerName?: string | null;
+}) {
   const [phone, setPhone] = useState("6466311744");
   const [phase, setPhase] = useState<Phase>("idle");
   const [detail, setDetail] = useState(
-    voicemailName
-      ? `LiveKit AMD decides who answered. Human → you talk. Machine → “${voicemailName}” is left.`
-      : "LiveKit AMD decides who answered. Human → you talk. Set an active voicemail before machine answers can leave one.",
+    [
+      "LiveKit AMD decides who answered.",
+      humanAnswerName
+        ? `Human → leave “${humanAnswerName}” (then hang up).`
+        : "Human → set an active human-answer message to leave one (otherwise you talk).",
+      voicemailName
+        ? `Machine → leave “${voicemailName}”.`
+        : "Machine → set an active voicemail before a drop can be left.",
+    ].join(" "),
   );
   const [sipStatus, setSipStatus] = useState<string>("—");
   const [amdResult, setAmdResult] = useState<AmdCategory | null>(null);
@@ -219,12 +217,27 @@ export function LiveCallPanel({ voicemailName }: { voicemailName: string | null 
     if (!host) return;
     // One remote stream at a time — avoids stacking overlapping audio elements.
     clearRemoteAudio();
-    soundRef.current?.stopBeep();
     const element = track.attach();
     element.autoplay = true;
+    element.muted = modeRef.current === "voicemail";
     element.setAttribute("data-remote-audio", "phone");
     host.appendChild(element);
     void element.play().catch(() => undefined);
+  }
+
+  /** Attach phone SIP audio already in the room (early media / ringback). */
+  function attachExistingPhoneAudio(room: Room) {
+    for (const participant of room.remoteParticipants.values()) {
+      if (!participant.identity.startsWith("phone-")) continue;
+      for (const publication of participant.audioTrackPublications.values()) {
+        const track = publication.track;
+        if (track) {
+          attachRemoteAudio(track);
+          pushEvent("Hearing audio from the receiver (ringback / early media).");
+          return;
+        }
+      }
+    }
   }
 
   function muteRemoteAudio(muted: boolean) {
@@ -285,11 +298,50 @@ export function LiveCallPanel({ voicemailName }: { voicemailName: string | null 
     }).catch(() => undefined);
   }
 
+  async function playHumanAnswerDrop(room: Room) {
+    if (cancelledRef.current || modeRef.current) return;
+    const sound = soundRef.current;
+    if (!sound?.hasHumanAnswer()) {
+      setDetail("Set an active human-answer message under Human Answer Messages. Opening talk instead.");
+      pushEvent("No active human-answer message — opening talk instead.");
+      await beginTalking(room);
+      return;
+    }
+    modeRef.current = "talk";
+    talkingRef.current = true;
+    muteRemoteAudio(true);
+    micRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = false;
+    });
+    setStatus(
+      "talking",
+      humanAnswerName ? `Playing human-answer “${humanAnswerName}”.` : "Playing the human-answer message.",
+    );
+    noteSession(
+      "AGENT",
+      humanAnswerName ? `Playing human-answer “${humanAnswerName}”.` : "Playing human-answer message.",
+    );
+    pushEvent(
+      humanAnswerName
+        ? `Playing human-answer message “${humanAnswerName}”.`
+        : "Playing human-answer message.",
+    );
+    try {
+      const playback = sound.playHumanAnswer();
+      if (playback.track) {
+        await room.localParticipant.publishTrack(playback.track, { name: "human-answer" });
+      }
+      await playback.done;
+      if (!cancelledRef.current) hangup(room.name, "ended", "Human-answer message left.");
+    } catch {
+      if (!cancelledRef.current) hangup(room.name, "error", "The human-answer message could not be played.");
+    }
+  }
+
   async function beginTalking(room: Room) {
     if (modeRef.current || cancelledRef.current) return;
     modeRef.current = "talk";
     talkingRef.current = true;
-    soundRef.current?.stopBeep();
     const tracks = micRef.current?.getAudioTracks() ?? [];
     for (const track of tracks) track.enabled = true;
     if (tracks[0]) {
@@ -302,12 +354,13 @@ export function LiveCallPanel({ voicemailName }: { voicemailName: string | null 
     if (cancelledRef.current) return;
     muteRemoteAudio(false);
     setStatus("talking", "Human answered. Speak into your microphone. You should hear them here.");
+    pushEvent("Microphone open — you can talk.");
   }
 
   async function leaveVoicemail(room: Room) {
     if (cancelledRef.current || modeRef.current === "voicemail") return;
     const sound = soundRef.current;
-    if (!sound?.hasMessage()) {
+    if (!sound?.hasVoicemail()) {
       setDetail("Set an active voicemail under Voicemail Messages. You can keep talking.");
       pushEvent("No active voicemail message — opening talk instead.");
       if (!modeRef.current) await beginTalking(room);
@@ -315,7 +368,6 @@ export function LiveCallPanel({ voicemailName }: { voicemailName: string | null 
     }
     modeRef.current = "voicemail";
     talkingRef.current = true;
-    sound.stopBeep();
     // Don't mix mailbox greeting with our drop in the speakers.
     muteRemoteAudio(true);
     micRef.current?.getAudioTracks().forEach((track) => {
@@ -362,13 +414,13 @@ export function LiveCallPanel({ voicemailName }: { voicemailName: string | null 
       return;
     }
     if (talkCategories(refined.category)) {
-      await beginTalking(room);
+      await playHumanAnswerDrop(room);
     }
   }
 
   function armVoicemail() {
     const room = roomRef.current;
-    if (!soundRef.current?.hasMessage()) {
+    if (!soundRef.current?.hasVoicemail()) {
       setDetail("Set an active voicemail under Voicemail Messages first.");
       pushEvent("Cannot leave voicemail — no active message.");
       return;
@@ -389,7 +441,6 @@ export function LiveCallPanel({ voicemailName }: { voicemailName: string | null 
   function onAnswered(room: Room) {
     if (cancelledRef.current || answeredRef.current) return;
     answeredRef.current = true;
-    soundRef.current?.stopBeep();
     setSipStatus("active");
     pushEvent("Call answered (SIP active).");
 
@@ -399,8 +450,8 @@ export function LiveCallPanel({ voicemailName }: { voicemailName: string | null 
     }
 
     if (!amdEnabledRef.current) {
-      pushEvent("AMD agent not available — opening talk.");
-      void beginTalking(room);
+      pushEvent("AMD agent not available — leaving human-answer message.");
+      void playHumanAnswerDrop(room);
       return;
     }
 
@@ -493,8 +544,7 @@ export function LiveCallPanel({ voicemailName }: { voicemailName: string | null 
 
     const sound = new CallSound();
     soundRef.current = sound;
-    sound.dialBeep();
-    setStatus("dialing", "Starting outbound call…");
+    setStatus("dialing", "Starting outbound call… (no local beep — only audio from the receiver)");
 
     const response = await fetch("/api/calls/listen", {
       method: "POST",
@@ -512,6 +562,8 @@ export function LiveCallPanel({ voicemailName }: { voicemailName: string | null 
       amd?: boolean;
       voicemailUrl?: string | null;
       voicemailName?: string | null;
+      humanAnswerUrl?: string | null;
+      humanAnswerName?: string | null;
     };
     if (cancelledRef.current) {
       if (body.roomName) hangup(body.roomName, "ended", "You hung up.");
@@ -528,7 +580,13 @@ export function LiveCallPanel({ voicemailName }: { voicemailName: string | null 
     amdEnabledRef.current = Boolean(body.amd);
     setAmdEnabled(Boolean(body.amd));
     pushEvent(body.amd ? "AMD agent dispatched." : "AMD agent not running — talk-only fallback.");
-    const messageReady = body.voicemailUrl ? sound.loadMessage(body.voicemailUrl).catch(() => undefined) : Promise.resolve();
+    const messageReady = Promise.all([
+      body.voicemailUrl ? sound.loadVoicemail(body.voicemailUrl).catch(() => undefined) : Promise.resolve(),
+      body.humanAnswerUrl ? sound.loadHumanAnswer(body.humanAnswerUrl).catch(() => undefined) : Promise.resolve(),
+    ]);
+    if (body.humanAnswerName) {
+      pushEvent(`Active human-answer: ${body.humanAnswerName}`);
+    }
 
     const room = new Room({ singlePeerConnection: false });
     roomRef.current = room;
@@ -558,7 +616,7 @@ export function LiveCallPanel({ voicemailName }: { voicemailName: string | null 
         return;
       }
       attachRemoteAudio(track);
-      pushEvent("Hearing audio from the receiver.");
+      pushEvent("Hearing audio from the receiver (ringback / call audio).");
     });
     room.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
       if (cancelledRef.current) return;
@@ -589,7 +647,11 @@ export function LiveCallPanel({ voicemailName }: { voicemailName: string | null 
           body: JSON.stringify({ sessionId: body.sessionId, kind: "JOINED", message: "You joined the call." }),
         }).catch(() => undefined);
       }
-      setStatus("ringing", `Ringing ${body.display}. Listen for ringback from the receiver. Caller ID ${body.callerId}.`);
+      attachExistingPhoneAudio(room);
+      setStatus(
+        "ringing",
+        `Ringing ${body.display}. Only remote ringback/voice is played (nothing generated locally). Caller ID ${body.callerId}.`,
+      );
       watch(body.roomName, room);
     } catch (error) {
       hangup(body.roomName, "error", error instanceof Error ? error.message : "Could not join the call audio.");
@@ -727,6 +789,10 @@ export function LiveCallPanel({ voicemailName }: { voicemailName: string | null 
       </div>
       <p className="mt-3 text-sm text-zinc-400">
         {voicemailName ? `Active voicemail: ${voicemailName}` : "No active voicemail. Add one under Voicemail Messages."}
+        {" · "}
+        {humanAnswerName
+          ? `Active human-answer: ${humanAnswerName}`
+          : "No active human-answer. Add one under Human Answer Messages."}
       </p>
     </section>
   );
