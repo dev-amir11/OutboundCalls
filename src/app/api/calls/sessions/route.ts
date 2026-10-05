@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { appendLiveKitEvent } from "@/services/livekit/session-log";
 
-const KINDS = new Set(["JOINED", "VOICEMAIL", "HUNG_UP", "FAILED"]);
+const KINDS = new Set(["JOINED", "AGENT", "AMD", "VOICEMAIL", "HUNG_UP", "FAILED"]);
 
 export async function POST(request: Request) {
   const user = await getCurrentUser();

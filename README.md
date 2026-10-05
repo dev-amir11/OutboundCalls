@@ -47,18 +47,37 @@ Open the dashboard or Current Calls and leave the page open. Those pages poll ev
 
 ## LiveKit and Telnyx
 
-Outbound telephone calls are created by LiveKit. LiveKit opens one room per call and that room is the session until hangup. Telnyx is the SIP trunk LiveKit uses to reach the phone network.
+Outbound telephone calls are created by LiveKit. LiveKit opens one room per call and that room is the session until hangup. Telnyx (or another SIP carrier such as Telorca) is the SIP trunk LiveKit uses to reach the phone network.
 
-1. In Telnyx, create a credential SIP connection and an outbound number.
-2. In the environment, set `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, and `TELNYX_PHONE_NUMBER`.
-3. Either set `LIVEKIT_SIP_TRUNK_ID` for a trunk that already points at Telnyx, or set `TELNYX_SIP_USERNAME` and `TELNYX_SIP_PASSWORD`. The desk then creates a LiveKit outbound trunk named `outbound-calls-telnyx`. `TELNYX_SIP_ADDRESS` defaults to `sip.telnyx.com`.
+1. In your SIP provider, create a credential SIP connection and an outbound number.
+2. In the environment, set `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_SIP_TRUNK_ID`, `CALLER_ID`, and `DIAL_PREFIX`.
+3. Either set `LIVEKIT_SIP_TRUNK_ID` for a trunk that already points at your carrier, or set `TELNYX_SIP_USERNAME` and `TELNYX_SIP_PASSWORD` when using Telnyx auto-trunk creation.
 4. Set `TELEPHONY_PROVIDER=livekit` and restart the app.
 
-Settings → Telephony shows which of those values are present. It does not store the secrets. Leave `TELEPHONY_PROVIDER=mock` to keep simulated calls.
+### Place Call AMD
+
+Place Call uses **LiveKit Agents answering-machine detection** after the callee answers:
+
+- **Human / uncertain / IVR** → desk microphone opens so you can talk
+- **Machine voicemail** → the active voicemail message is played into the call
+- **Mailbox unavailable** → hang up without leaving a message
+
+AMD is provided by LiveKit (`voice.AMD`). On self-hosted LiveKit it uses **Deepgram** (STT) and **Google Gemini** (LLM) via `DEEPGRAM_API_KEY` and `GOOGLE_API_KEY` in `.env`.
+
+Run the AMD worker in a second terminal while placing calls:
+
+```bash
+npm run agent
+```
+
+The worker registers as `place-call-amd` and is dispatched from `POST /api/calls/listen`. If the worker is not running, Place Call still dials; when answered you talk (no machine drop).
+
+Settings → Telephony shows which LiveKit values are present. It does not store the secrets. Leave `TELEPHONY_PROVIDER=mock` to keep simulated calls.
 
 ## Scripts
 
 - `npm run dev` — app
+- `npm run agent` — LiveKit AMD worker for Place Call
 - `npm test` — unit tests for import, filters, the call state machine, the queue, and campaign transitions
 - `npm run lint` — ESLint
 - `npx tsc --noEmit` — typecheck

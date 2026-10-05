@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "agent": "tsx src/agents/amd-place-call.ts dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -12,6 +13,10 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.1",
+    "@livekit/agents": "^1.9.1",
+    "@livekit/agents-plugin-deepgram": "^1.9.1",
+    "@livekit/agents-plugin-google": "^1.9.1",
+    "@livekit/agents-plugin-livekit": "^1.9.1",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
     "bcryptjs": "^3.0.3",

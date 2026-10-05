@@ -10,7 +10,7 @@ export default async function PlaceCallPage() {
     <div>
       <PageHeader
         title="Place a call"
-        description="If someone picks up, you talk. If the phone rings for about 20 seconds and the mailbox answers, the active voicemail is left for them."
+        description="LiveKit AMD listens after answer. If a person picks up, you talk. If a machine picks up, the active voicemail is left."
       />
       <LiveCallPanel voicemailName={voicemail?.name ?? null} />
     </div>

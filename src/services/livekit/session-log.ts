@@ -5,8 +5,10 @@ const STATUS_BY_KIND: Record<string, LiveKitDeskStatus | null> = {
   STARTED: "DIALING",
   DIALING: "DIALING",
   JOINED: null,
+  AGENT: null,
   RINGING: "RINGING",
   ANSWERED: "TALKING",
+  AMD: null,
   VOICEMAIL: null,
   HUNG_UP: "ENDED",
   FAILED: "FAILED",
@@ -43,10 +45,14 @@ export async function startLiveKitSession(input: {
 export async function appendLiveKitEvent(roomName: string, kind: string, message: string) {
   const session = await prisma.liveKitSession.findUnique({ where: { roomName } });
   if (!session || session.endedAt) return;
-  const existing = await prisma.liveKitSessionEvent.findFirst({
-    where: { sessionId: session.id, kind },
-  });
-  if (existing) return;
+
+  const allowRepeat = kind === "AMD" || kind === "VOICEMAIL";
+  if (!allowRepeat) {
+    const existing = await prisma.liveKitSessionEvent.findFirst({
+      where: { sessionId: session.id, kind },
+    });
+    if (existing) return;
+  }
 
   const status = STATUS_BY_KIND[kind];
   const now = new Date();
@@ -55,7 +61,7 @@ export async function appendLiveKitEvent(roomName: string, kind: string, message
     data: {
       ...(status ? { status } : {}),
       detail: message,
-      answeredAt: kind === "ANSWERED" ? (session.answeredAt ?? now) : undefined,
+      answeredAt: kind === "ANSWERED" || kind === "AMD" ? (session.answeredAt ?? now) : undefined,
       endedAt: kind === "HUNG_UP" || kind === "FAILED" ? now : undefined,
       events: { create: { kind, message } },
     },
@@ -82,6 +88,6 @@ export async function noteSipStatus(roomName: string, sipStatus: string, roomExi
     return;
   }
   if (sipStatus === "active" || sipStatus === "automation") {
-    await appendLiveKitEvent(roomName, "ANSWERED", "Call answered. You can talk.");
+    await appendLiveKitEvent(roomName, "ANSWERED", "Call answered. Waiting for LiveKit AMD.");
   }
 }

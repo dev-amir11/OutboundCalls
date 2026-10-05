@@ -1,6 +1,7 @@
-import { AccessToken, RoomServiceClient, SipClient } from "livekit-server-sdk";
+import { AccessToken, AgentDispatchClient, RoomServiceClient, SipClient } from "livekit-server-sdk";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
+import { PLACE_CALL_AMD_AGENT } from "@/providers/livekit/amd";
 import { browserLiveKitUrl, buildDialString, digitsOnly } from "@/providers/livekit/dial";
 import { normalizeLiveKitHost } from "@/providers/livekit/config";
 import { normalizePhone } from "@/services/leads/phone";
@@ -36,6 +37,7 @@ function clients() {
     settings,
     rooms: new RoomServiceClient(settings.host, settings.apiKey, settings.apiSecret),
     sip: new SipClient(settings.host, settings.apiKey, settings.apiSecret),
+    agents: new AgentDispatchClient(settings.host, settings.apiKey, settings.apiSecret),
   };
 }
 
@@ -72,13 +74,15 @@ export async function POST(request: Request) {
   let settings: ReturnType<typeof liveKitSettings>;
   let rooms: RoomServiceClient;
   let sip: SipClient;
+  let agents: AgentDispatchClient;
   try {
-    ({ settings, rooms, sip } = clients());
+    ({ settings, rooms, sip, agents } = clients());
   } catch (error) {
     const message = error instanceof Error ? error.message : "LiveKit is not configured.";
     return NextResponse.json({ error: message }, { status: 500 });
   }
   const roomName = `desk-${crypto.randomUUID()}`;
+  const participantIdentity = `phone-${roomName}`;
   const dialed = buildDialString(phone.e164, settings.prefix);
 
   await rooms.createRoom({
@@ -97,10 +101,25 @@ export async function POST(request: Request) {
     dialed,
   });
 
+  let amd = false;
+  try {
+    await agents.createDispatch(roomName, PLACE_CALL_AMD_AGENT, {
+      metadata: JSON.stringify({
+        participantIdentity,
+        sessionId: session.id,
+      }),
+    });
+    amd = true;
+    await appendLiveKitEvent(roomName, "AGENT", "LiveKit AMD agent dispatched.");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "AMD dispatch failed.";
+    await appendLiveKitEvent(roomName, "AGENT", `AMD dispatch failed: ${message}. Desk will talk if answered.`);
+  }
+
   try {
     await sip.createSipParticipant(settings.trunkId, dialed, roomName, {
       fromNumber: settings.callerId,
-      participantIdentity: `phone-${roomName}`,
+      participantIdentity,
       participantName: phone.display,
       playDialtone: false,
       ringingTimeout: 120,
@@ -130,6 +149,7 @@ export async function POST(request: Request) {
   return NextResponse.json({
     roomName,
     sessionId: session.id,
+    amd,
     voicemailUrl: voicemail ? `/api/audio/${voicemail.id}` : null,
     voicemailName: voicemail?.name ?? null,
     token: await token.toJwt(),
