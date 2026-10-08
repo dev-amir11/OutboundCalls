@@ -1,0 +1,8 @@
+# AMD worker service (Postgres is a separate Railway plugin; Next.js goes on Vercel).
+[build]
+buildCommand = "npx prisma generate"
+
+[deploy]
+startCommand = "npm run agent:start"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
