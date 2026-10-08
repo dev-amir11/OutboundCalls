@@ -74,10 +74,87 @@ The worker registers as `place-call-amd` and is dispatched from `POST /api/calls
 
 Settings → Telephony shows which LiveKit values are present. It does not store the secrets. Leave `TELEPHONY_PROVIDER=mock` to keep simulated calls.
 
+## Production (Vercel + Railway)
+
+Split deploy:
+
+| Piece | Host |
+|---|---|
+| Next.js desk + APIs | **Vercel** |
+| PostgreSQL | **Railway** |
+| AMD worker (`npm run agent:start`) | **Railway** (second service) |
+| LiveKit + SIP trunk | **Your self-hosted LiveKit** (must be public `wss://`) |
+
+Audio uploads use `STORAGE_PROVIDER=db` in production (Postgres `StoredAudio`). Local disk (`STORAGE_PROVIDER=local`) only works for local development.
+
+### Self-hosted LiveKit (WSS)
+
+Browsers on `https://…vercel.app` cannot use plain `ws://IP`. Before go-live:
+
+1. Put TLS in front of LiveKit (e.g. `wss://livekit.yourdomain.com`).
+2. Open firewall ports for LiveKit signaling and media (UDP/TCP ranges your LiveKit config uses).
+3. Keep SIP trunk settings (`LIVEKIT_SIP_TRUNK_ID`, `CALLER_ID`, `DIAL_PREFIX`).
+4. Set `LIVEKIT_URL` to that public `wss://` or `https://` URL on both Vercel and the Railway agent.
+
+### Railway
+
+1. Create a project and **add Postgres**. Copy the connection URL (SSL on) as `DATABASE_URL`.
+2. Add a **second service** from this repo for the AMD worker:
+   - **Start command:** `npm run agent:start`
+   - **Env vars:** `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `DEEPGRAM_API_KEY`, `GOOGLE_API_KEY` (optional `LIVEKIT_AGENT_NAME=place-call-amd`)
+   - The worker does not need `DATABASE_URL`.
+3. Deploy and confirm logs show the worker registered with LiveKit as `place-call-amd`.
+
+### Vercel
+
+1. Import the same GitHub repo (Next.js defaults).
+2. Build uses `prisma migrate deploy && next build` (see `package.json`). `postinstall` runs `prisma generate`.
+3. Set **Production** env vars:
+
+| Variable | Notes |
+|---|---|
+| `DATABASE_URL` | Railway Postgres URL |
+| `AUTH_SECRET` | New long random secret (not the local one) |
+| `NEXT_PUBLIC_APP_URL` | `https://your-app.vercel.app` |
+| `STORAGE_PROVIDER` | `db` |
+| `TELEPHONY_PROVIDER` | `livekit` |
+| `LIVEKIT_URL` | Public `wss://` or `https://` LiveKit URL |
+| `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | Same as LiveKit server |
+| `LIVEKIT_SIP_TRUNK_ID` | Existing trunk |
+| `CALLER_ID` / `DIAL_PREFIX` | Same as local |
+| `APP_TIMEZONE` | Ops timezone |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Only if you run seed against prod |
+
+4. Deploy, then open the Vercel URL.
+
+### One-time prod seed (optional)
+
+With prod `DATABASE_URL` set locally (or in a Railway shell):
+
+```bash
+npx prisma migrate deploy
+npx prisma db seed
+```
+
+Change `ADMIN_PASSWORD` before seeding production. Prefer `STORAGE_PROVIDER=db` when seeding prod so audio blobs land in Postgres.
+
+### Go-live checklist
+
+1. LiveKit reachable at `wss://…` from your laptop and from Railway.
+2. Railway AMD worker online.
+3. Vercel app loads and connects to Postgres.
+4. Upload human-answer and voicemail messages (DB storage).
+5. Settings → Telephony shows LiveKit fields configured.
+6. Place Call: dial → AMD classifies → talk or voicemail drop.
+7. Auth cookies work over HTTPS (`secure` when `NODE_ENV=production`).
+
+Do not commit `.env`. Set secrets only in the Vercel and Railway dashboards.
+
 ## Scripts
 
 - `npm run dev` — app
-- `npm run agent` — LiveKit AMD worker for Place Call
+- `npm run agent` — LiveKit AMD worker (development)
+- `npm run agent:start` — LiveKit AMD worker (production / Railway)
 - `npm test` — unit tests for import, filters, the call state machine, the queue, and campaign transitions
 - `npm run lint` — ESLint
 - `npx tsc --noEmit` — typecheck

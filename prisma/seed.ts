@@ -2,7 +2,7 @@ import "dotenv/config";
 import { hash } from "bcryptjs";
 import { prisma } from "../src/lib/prisma";
 import { startOfZonedDay } from "../src/lib/zoned-time";
-import { LocalStorageProvider } from "../src/providers/storage/local-storage-provider";
+import { getStorageProvider } from "../src/providers/storage";
 import type { AnswerType, CallLifecycleStatus, CallOutcome, ForcedOutcome } from "../src/generated/prisma/client";
 
 const FIRST = [
@@ -103,6 +103,17 @@ async function main() {
   await prisma.lead.deleteMany({ where: { isSeed: true } });
   await prisma.campaign.deleteMany({ where: { isSeed: true } });
   await prisma.leadImport.deleteMany({ where: { isSeed: true } });
+  const seedMessages = await prisma.audioMessage.findMany({
+    where: { isSeed: true },
+    select: { storagePath: true },
+  });
+  const seedBlobIds = seedMessages
+    .map((m) => m.storagePath)
+    .filter((p) => p.startsWith("db:"))
+    .map((p) => p.slice(3));
+  if (seedBlobIds.length > 0) {
+    await prisma.storedAudio.deleteMany({ where: { id: { in: seedBlobIds } } });
+  }
   await prisma.audioMessage.deleteMany({ where: { isSeed: true } });
 
   const passwordHash = await hash(password, 10);
@@ -112,7 +123,7 @@ async function main() {
     create: { email, name: "Administrator", passwordHash },
   });
 
-  const storage = new LocalStorageProvider();
+  const storage = getStorageProvider();
   const humanFile = await storage.save({ fileName: "seed-human-answer.wav", mimeType: "audio/wav", data: wav(3) });
   const voicemailFile = await storage.save({ fileName: "seed-voicemail.wav", mimeType: "audio/wav", data: wav(4) });
   const human = await prisma.audioMessage.create({

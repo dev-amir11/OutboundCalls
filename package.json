@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "agent": "tsx src/agents/amd-place-call.ts dev",
-    "build": "next build",
+    "agent:start": "tsx src/agents/amd-place-call.ts start",
+    "postinstall": "prisma generate",
+    "build": "prisma migrate deploy && next build",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",

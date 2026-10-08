@@ -272,6 +272,14 @@ model AudioMessage {
   @@index([kind, isActive])
 }
 
+/// Blob store for STORAGE_PROVIDER=db (Vercel-safe; not used with local disk).
+model StoredAudio {
+  id        String   @id @default(cuid())
+  data      Bytes
+  mimeType  String
+  createdAt DateTime @default(now())
+}
+
 model LiveKitSession {
   id           String            @id @default(cuid())
   roomName     String            @unique
