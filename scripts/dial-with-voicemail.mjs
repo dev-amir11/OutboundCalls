@@ -216,7 +216,8 @@ try {
 
     if (status === "active" || status === "automation") {
       const rangFor = ringStarted ? Date.now() - ringStarted : 0;
-      const mailbox = status === "automation" || rangFor >= HUMAN_ANSWER_MS;
+      const alwaysVoicemail = process.env.ALWAYS_VOICEMAIL === "1";
+      const mailbox = alwaysVoicemail || status === "automation" || rangFor >= HUMAN_ANSWER_MS;
       if (mailbox) {
         await playVoicemail();
       } else {

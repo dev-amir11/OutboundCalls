@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 const schema = z.object({
-  email: z.email("Enter a valid email."),
+  email: z.string().trim().email("Enter a valid email."),
   password: z.string().min(1, "Enter a password."),
 });
 
@@ -20,7 +20,10 @@ export function LoginForm() {
   const [error, setError] = useState<string | null>(null);
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { email: "", password: "" },
+    defaultValues: {
+      email: "admin@outbound.local",
+      password: "",
+    },
   });
 
   return (
@@ -34,7 +37,7 @@ export function LoginForm() {
     >
       <label className="grid gap-1.5">
         <Label htmlFor="email">Email</Label>
-        <Input id="email" type="email" autoComplete="username" {...form.register("email")} />
+        <Input id="email" type="text" autoComplete="username" inputMode="email" {...form.register("email")} />
         {form.formState.errors.email ? <span className="text-sm text-rose-300">{form.formState.errors.email.message}</span> : null}
       </label>
       <label className="grid gap-1.5">

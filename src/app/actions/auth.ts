@@ -8,13 +8,16 @@ import { actionError } from "@/lib/action-error";
 import { prisma } from "@/lib/prisma";
 
 const loginSchema = z.object({
-  email: z.email("Enter a valid email."),
+  email: z.string().trim().email("Enter a valid email."),
   password: z.string().min(1, "Enter a password."),
 });
 
 export async function loginAction(input: { email: string; password: string }) {
   try {
-    const parsed = loginSchema.safeParse(input);
+    const parsed = loginSchema.safeParse({
+      email: String(input.email ?? ""),
+      password: String(input.password ?? ""),
+    });
     if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the form." };
     const email = parsed.data.email.toLowerCase();
     const user = await prisma.user.findUnique({ where: { email } });

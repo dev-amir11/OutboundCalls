@@ -1,6 +1,11 @@
+import { redirect } from "next/navigation";
 import { LoginForm } from "@/components/login-form";
+import { getCurrentUser } from "@/lib/auth";
 
-export default function LoginPage() {
+export default async function LoginPage() {
+  const user = await getCurrentUser();
+  if (user) redirect("/");
+
   return (
     <main className="grid min-h-screen place-items-center bg-[#0b0e13] px-4 py-10">
       <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#161b24] p-6 shadow-sm sm:p-8">

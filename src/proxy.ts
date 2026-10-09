@@ -13,9 +13,8 @@ export async function proxy(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  if (user && isLogin) {
-    return NextResponse.redirect(new URL("/", request.url));
-  }
+  // Do not bounce /login away based on the JWT alone — the page checks the User
+  // row and clears stale cookies after a DB reseed.
 
   return NextResponse.next();
 }

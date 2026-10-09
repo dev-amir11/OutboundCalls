@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  DisconnectReason,
   Room,
   RoomEvent,
   Track,
@@ -13,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { isAmdDataMessage, isSttLogMessage, refineAmdCategory, talkCategories, type AmdCategory } from "@/providers/livekit/amd";
+import { disconnectReasonLabel } from "@/providers/livekit/dial";
 
 type Phase = "idle" | "dialing" | "ringing" | "detecting" | "talking" | "voicemail" | "ended" | "error";
 
@@ -124,6 +126,7 @@ export function LiveCallPanel({
   humanAnswerName?: string | null;
 }) {
   const [phone, setPhone] = useState("6466311744");
+  const [usePrefix, setUsePrefix] = useState(true);
   const [phase, setPhase] = useState<Phase>("idle");
   const [detail, setDetail] = useState(
     [
@@ -141,6 +144,7 @@ export function LiveCallPanel({
   const [amdEnabled, setAmdEnabled] = useState(false);
   const [lastTranscript, setLastTranscript] = useState<string>("");
   const [events, setEvents] = useState<StatusEvent[]>([]);
+  const loggedDisconnectRef = useRef(false);
   const roomRef = useRef<Room | null>(null);
   const roomNameRef = useRef<string | null>(null);
   const soundRef = useRef<CallSound | null>(null);
@@ -165,7 +169,15 @@ export function LiveCallPanel({
     const at = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     eventIdRef.current += 1;
     const id = eventIdRef.current;
-    setEvents((prev) => [...prev.slice(-40), { id, at, text }]);
+    setEvents((prev) => [...prev.slice(-80), { id, at, text }]);
+  }
+
+  function pushJson(label: string, value: unknown) {
+    try {
+      pushEvent(`${label} ${JSON.stringify(value)}`);
+    } catch {
+      pushEvent(`${label} ${String(value)}`);
+    }
   }
 
   function setStatus(next: Phase, message: string) {
@@ -368,13 +380,23 @@ export function LiveCallPanel({
     }
     modeRef.current = "voicemail";
     talkingRef.current = true;
-    // Don't mix mailbox greeting with our drop in the speakers.
-    muteRemoteAudio(true);
     micRef.current?.getAudioTracks().forEach((track) => {
       track.enabled = false;
     });
+    // Hear the carrier greeting / beep first, then drop our public WAV.
+    muteRemoteAudio(false);
+    const greetingWaitMs = 4500;
+    setStatus(
+      "voicemail",
+      `Mailbox greeting — waiting ${Math.round(greetingWaitMs / 1000)}s for beep, then leaving “${voicemailName ?? "voicemail"}”.`,
+    );
+    pushEvent(`Waiting ${Math.round(greetingWaitMs / 1000)}s for mailbox greeting/beep before drop…`);
+    noteSession("VOICEMAIL", voicemailName ? `Waiting for beep, then leaving “${voicemailName}”.` : "Waiting for beep, then leaving a voicemail.");
+    await new Promise<void>((resolve) => setTimeout(resolve, greetingWaitMs));
+    if (cancelledRef.current) return;
+    muteRemoteAudio(true);
+    pushEvent("Remote audio muted — playing desk voicemail into the call.");
     setStatus("voicemail", voicemailName ? `Leaving voicemail “${voicemailName}”.` : "Leaving the voicemail.");
-    noteSession("VOICEMAIL", voicemailName ? `Leaving voicemail “${voicemailName}”.` : "Leaving a voicemail.");
     try {
       const playback = sound.playMessage();
       if (playback.track) await room.localParticipant.publishTrack(playback.track, { name: "voicemail" });
@@ -473,29 +495,52 @@ export function LiveCallPanel({
         if (!cancelledRef.current) pollRef.current = setTimeout(() => void tick(), 1000);
         return;
       }
-      const body = (await response.json()) as { status?: string; roomExists?: boolean; error?: string };
+      const body = (await response.json()) as {
+        status?: string;
+        roomExists?: boolean;
+        error?: string;
+        attributes?: Record<string, string>;
+        disconnectReason?: string | null;
+        sipCallId?: string | null;
+        phonePresent?: boolean;
+      };
       if (cancelledRef.current) return;
       if (!response.ok) {
         hangup(roomName, "error", body.error || "Could not read the call.");
         return;
       }
       const status = body.status ?? "";
-      if (status && status !== "pending" && lastSipRef.current !== status) {
-        lastSipRef.current = status;
+      const attrKey = body.attributes ? JSON.stringify(body.attributes) : "";
+      const detailKey = `${status}|${body.disconnectReason ?? ""}|${attrKey}`;
+      if (status && status !== "pending" && lastSipRef.current !== detailKey) {
+        lastSipRef.current = detailKey;
         setSipStatus(status);
         pushEvent(`SIP status: ${status}`);
+        if (body.sipCallId) pushEvent(`SIP call id: ${body.sipCallId}`);
+        if (body.disconnectReason && status !== "dialing" && status !== "ringing" && status !== "active") {
+          pushEvent(`Disconnect reason: ${body.disconnectReason}`);
+        }
+        if (body.attributes && Object.keys(body.attributes).length) {
+          pushJson("UScare/SIP attributes", body.attributes);
+        }
       }
       if (status === "pending") {
         pollRef.current = setTimeout(() => void tick(), 1000);
         return;
       }
       if (!body.roomExists || status === "hangup" || status === "disconnected") {
+        if (body.disconnectReason && !loggedDisconnectRef.current) {
+          loggedDisconnectRef.current = true;
+          pushEvent(`Gateway/SIP result: ${body.disconnectReason}`);
+        }
         const endedEarly =
           modeRef.current === "voicemail"
             ? "The mailbox hung up before the voicemail finished."
             : talkingRef.current
               ? "The other side hung up."
-              : "The call ended before they answered.";
+              : body.disconnectReason
+                ? `Call ended: ${body.disconnectReason}`
+                : "The call ended before they answered.";
         hangup(roomName, "ended", endedEarly);
         return;
       }
@@ -521,6 +566,7 @@ export function LiveCallPanel({
     amdDoneRef.current = false;
     answeredRef.current = false;
     lastSipRef.current = "";
+    loggedDisconnectRef.current = false;
     sessionIdRef.current = null;
     deletedRoomRef.current = null;
     setAmdResult(null);
@@ -546,25 +592,67 @@ export function LiveCallPanel({
     soundRef.current = sound;
     setStatus("dialing", "Starting outbound call… (no local beep — only audio from the receiver)");
 
+    const requestBody = { phone, usePrefix };
+    pushJson("Dial request", requestBody);
+
     const response = await fetch("/api/calls/listen", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone }),
+      body: JSON.stringify(requestBody),
     });
-    const body = (await response.json()) as {
+    const rawText = await response.text();
+    let body: {
       error?: string;
       roomName?: string;
       token?: string;
       url?: string;
       display?: string;
       callerId?: string;
+      dialed?: string;
       sessionId?: string;
       amd?: boolean;
       voicemailUrl?: string | null;
       voicemailName?: string | null;
       humanAnswerUrl?: string | null;
       humanAnswerName?: string | null;
-    };
+      usePrefix?: boolean;
+      dialPrefix?: string;
+      trunkId?: string;
+      trunkName?: string | null;
+      gateway?: string | null;
+      sipCallId?: string | null;
+      sipRequest?: unknown;
+      sipHttpStatus?: number;
+      sipResponse?: unknown;
+      liveKitHost?: string;
+    } = {};
+    try {
+      body = rawText ? (JSON.parse(rawText) as typeof body) : {};
+    } catch {
+      releaseLocalMedia();
+      setStatus(
+        "error",
+        `Place-call API returned non-JSON (HTTP ${response.status}). ${rawText.slice(0, 160) || "Empty body — usually LIVEKIT_URL unreachable."}`,
+      );
+      return;
+    }
+    pushEvent(`HTTP status: ${response.status}`);
+    if (body.sipRequest) pushJson("CreateSIPParticipant request", body.sipRequest);
+    if (body.sipResponse) pushJson("CreateSIPParticipant response", body.sipResponse);
+    if (body.gateway || body.trunkName) {
+      pushEvent(
+        `UScare/gateway: ${body.trunkName ?? "trunk"} @ ${body.gateway ?? "unknown"} (${body.trunkId ?? "no trunk id"})`,
+      );
+    }
+    if (body.dialed) {
+      pushEvent(
+        body.usePrefix
+          ? `Dialed with prefix${body.dialPrefix ? ` ${body.dialPrefix}` : ""}: ${body.dialed}`
+          : `Dialed without prefix: ${body.dialed}`,
+      );
+    }
+    if (body.sipCallId) pushEvent(`SIP call id: ${body.sipCallId}`);
+
     if (cancelledRef.current) {
       if (body.roomName) hangup(body.roomName, "ended", "You hung up.");
       else releaseLocalMedia();
@@ -572,7 +660,13 @@ export function LiveCallPanel({
     }
     if (!response.ok || !body.roomName || !body.token || !body.url) {
       releaseLocalMedia();
-      setStatus("error", body.error || "The call could not be started.");
+      const failDetail = [
+        body.error || "The call could not be started.",
+        body.sipHttpStatus ? `sipHttpStatus=${body.sipHttpStatus}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      setStatus("error", failDetail);
       return;
     }
     roomNameRef.current = body.roomName;
@@ -580,6 +674,7 @@ export function LiveCallPanel({
     amdEnabledRef.current = Boolean(body.amd);
     setAmdEnabled(Boolean(body.amd));
     pushEvent(body.amd ? "AMD agent dispatched." : "AMD agent not running — talk-only fallback.");
+    setSipStatus("dialing");
     const messageReady = Promise.all([
       body.voicemailUrl ? sound.loadVoicemail(body.voicemailUrl).catch(() => undefined) : Promise.resolve(),
       body.humanAnswerUrl ? sound.loadHumanAnswer(body.humanAnswerUrl).catch(() => undefined) : Promise.resolve(),
@@ -600,8 +695,15 @@ export function LiveCallPanel({
             : "The call ended before they answered.";
       hangup(room.name, "ended", endedEarly);
     };
-    room.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
-      if (participant.identity.startsWith("phone-")) remoteGone();
+    room.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant, reason?: DisconnectReason) => {
+      if (!participant.identity.startsWith("phone-")) return;
+      const label = disconnectReasonLabel(reason);
+      if (label && !loggedDisconnectRef.current) {
+        loggedDisconnectRef.current = true;
+        pushEvent(`UScare/SIP disconnect: ${label}`);
+        setSipStatus(label);
+      }
+      remoteGone();
     });
     room.on(RoomEvent.Disconnected, () => remoteGone());
     room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _publication: RemoteTrackPublication, participant: RemoteParticipant) => {
@@ -674,7 +776,7 @@ export function LiveCallPanel({
     if (stepId === "detecting") {
       if (phase === "dialing" || phase === "ringing") return "todo";
       if (phase === "detecting") return "current";
-      if (!amdEnabled && phase !== "detecting") return phase === "error" ? "todo" : "done";
+      if (!amdEnabled) return phase === "error" ? "todo" : "done";
       return "done";
     }
     if (stepId === "talking") {
@@ -745,12 +847,12 @@ export function LiveCallPanel({
           <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Live log</p>
           <p className="text-xs text-zinc-600">{events.length ? `${events.length} events` : "Waiting"}</p>
         </div>
-        <div className="max-h-48 space-y-1.5 overflow-y-auto px-3 py-2 font-mono text-xs">
+        <div className="max-h-72 space-y-1.5 overflow-y-auto px-3 py-2 font-mono text-[11px] leading-relaxed">
           {events.length === 0 ? (
-            <p className="text-zinc-600">Call events will appear here.</p>
+            <p className="text-zinc-600">Dial request, UScare gateway response, and SIP status will appear here.</p>
           ) : (
             events.map((event) => (
-              <p key={event.id} className="text-zinc-300">
+              <p key={event.id} className="break-all text-zinc-300">
                 <span className="text-zinc-500">{event.at}</span> <span>{event.text}</span>
               </p>
             ))
@@ -770,6 +872,29 @@ export function LiveCallPanel({
           disabled={busy}
           onChange={(event) => setPhone(event.target.value)}
         />
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-zinc-300">
+        <span className="text-zinc-500">Dial prefix</span>
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="radio"
+            name="dial-prefix"
+            checked={usePrefix}
+            disabled={busy}
+            onChange={() => setUsePrefix(true)}
+          />
+          With prefix (DIAL_PREFIX)
+        </label>
+        <label className="inline-flex items-center gap-2">
+          <input
+            type="radio"
+            name="dial-prefix"
+            checked={!usePrefix}
+            disabled={busy}
+            onChange={() => setUsePrefix(false)}
+          />
+          Without prefix
+        </label>
       </div>
       <div className="mt-4 flex gap-2">
         <Button type="button" onClick={() => void onCall()} disabled={busy}>
